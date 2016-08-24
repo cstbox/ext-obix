@@ -1,0 +1,10 @@
+Package: cstbox-ext-obix
+Version: %(version)s
+Section: embedded
+Priority: optional
+Architecture: all
+Depends: cstbox-core(>=1.0.3)
+Maintainer: Eric Pascual <eric.pascual@cstb.fr>
+Description: CSTBox OBIX gateway
+    This package adds a gateway between the CSTBox internal message bus and
+    an external OBIX system.

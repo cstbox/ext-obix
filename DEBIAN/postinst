@@ -1,0 +1,9 @@
+#!/bin/bash
+
+SVC="cstbox-obix"
+
+# starts the service if the CSTBox is currently running
+if [ -e /var/run/cstbox/cstbox-dbus.pid ] ; then
+    service $SVC start 
+fi
+
