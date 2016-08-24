@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<list xmlns:c2g="http://www.can2go.com" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" of="obix:obj"
+      xsi:schemaLocation="http://obix.org/ns/schema/1.0/obix/xsd" href="obix:BatchOut"
+      xmlns="http://obix.org/ns/schema/1.0">
+    <real name="Present_Value" unit="obix:units/parts_per_billion" writable="true"
+          href="http://192.168.0.73/obix/network/N001C43/DEV301/AV101/Present_Value/" val="420"/>
+    <real name="Present_Value" writable="true"
+          href="/http://192.168.0.73/obix/network/N001C43/DEV301/AV102/Present_Value/" val="390"/>
+    <real name="Present_Value" writable="true"
+          href="/http://192.168.0.73/obix/network/N001C43/DEV301/AV103/Present_Value/" val="390"/>
+    <real name="Present_Value" unit="obix:units/lux" writable="true"
+          href="/http://192.168.0.73/obix/network/N001C43/DEV301/AV104/Present_Value/" val="0"/>
+</list>

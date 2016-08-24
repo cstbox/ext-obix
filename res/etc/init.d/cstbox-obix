@@ -1,0 +1,24 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          cstbox-obix
+# Required-Start:    $remote_fs $syslog cstbox-evtmgr
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: CSTBox oBIX connector
+# Description:       This package adds a connector for getting data from a sensor network
+#                    managed by an oBIX compliant gateway.
+### END INIT INFO
+
+# Author: Eric Pascual <eric.pascual@cstb.fr>
+
+DESC="CSTBox oBIX connector"
+INIT_SEQ=94
+NAME=cstbox-obix
+DAEMON=/opt/cstbox/bin/obixd.py
+DAEMON_ARGS=
+CAN_FAIL=yes
+INIT_VERBOSE=yes
+
+. /opt/cstbox/lib/init/init-functions
+
