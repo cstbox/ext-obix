@@ -88,23 +88,34 @@ class OBIXConnector(log.Loggable):
 
         # loads the {obix_id: (var_name, var_type)} mapping
         self._mapping = cfg_dict['mapping']
+        self.log_info("mapping configuration :")
+        for k, v in self._mapping.iteritems():
+            self.log_info("- %-20s -> %s", k, v)
+
         # creates the reverse lookup {var_name: obix_id}
         self._reverse_mapping = {var_def[0]: obix_id for obix_id, var_def in self._mapping.iteritems()}
-
-        self._polling_period = cfg_dict.get('polling_period', 60)
 
         self._worker_thread = None
         self._terminate = False
 
+        self.log_info("global configuration :")
         try:
             global_cfg = cfg_dict["global"]
         except KeyError:
             self._events_ttl = self.DEFAULT_EVENTS_TTL
+            self._polling_period = self.DEFAULT_POLLING_PERIOD
         else:
             try:
                 self._events_ttl = parse_period(global_cfg['events_ttl'])
             except KeyError:
                 self._events_ttl = self.DEFAULT_EVENTS_TTL
+
+            try:
+                self._polling_period = parse_period(global_cfg['polling_period'])
+            except KeyError:
+                self._polling_period = self.DEFAULT_POLLING_PERIOD
+        for k, v in (("events_ttl", self._events_ttl), ("polling_period", self._polling_period)):
+            self.log_info("- %-20s : %s", k, v)
 
         # patch the default gateway query process by the provided one if any
         if alt_query_gateway:
@@ -166,74 +177,93 @@ class OBIXConnector(log.Loggable):
 
         ns_sub_pattern = re.compile(r'{.*}')
 
+        request_exception_level = 0
         logger.info('starting polling loop')
         while not self._terminate:
             now = time.time()
 
             if now >= next_schedule:
 
-                reply = self._query_gateway(url, data=obix_request)
+                try:
+                    reply = self._query_gateway(url, data=obix_request)
 
-                if reply.status_code == 200:
-                    root = ET.fromstring(reply.text)
-                    for child, obix_sensor in zip(root, sensor_list):
-                        tag = child.tag
-                        if tag != 'err':
-                            # strip namespaces for simplification's sake (we don't support them for the moment)
-                            tag = ns_sub_pattern.sub('', tag)
+                except requests.RequestException as e:
+                    if request_exception_level == 0:
+                        logger.error('gateway request error : %s', e)
+                        request_exception_level = 1
+                    elif request_exception_level == 1:
+                        logger.error('gateway request error (solid) : %s', e)
+                        request_exception_level = 2
+                    else:
+                        pass    # don't report anymore
 
-                            # convert the string representation of the value in a typed one, using
-                            # the tag-to-datatype mapping
-                            value = pythonize[tag](child.attrib['val'])
+                else:
+                    if request_exception_level:
+                        logger.info('recovered from gateway request error')
+                        request_exception_level = 0
 
-                            # get the unit if any
-                            try:
-                                unit = child.attrib['unit'].split('/')[-1]
-                            except KeyError:
-                                unit = None
+                    if reply.status_code == 200:
+                        root = ET.fromstring(reply.text)
+                        for child, obix_sensor in zip(root, sensor_list):
+                            tag = child.tag
+                            if tag != 'err':
+                                # strip namespaces for simplification's sake (we don't support them for the moment)
+                                tag = ns_sub_pattern.sub('', tag)
 
-                            # get the CSTBox var type and name, based on the OBIX-to-CSTBox mapping
-                            # specified in the configuration file
-                            var_name, var_type = self._mapping[obix_sensor]
+                                # convert the string representation of the value in a typed one, using
+                                # the tag-to-datatype mapping
+                                value = pythonize[tag](child.attrib['val'])
 
-                            # has the value changed from last time ? If yes, publish the corresponding event
-                            # and remember the new one
-                            last_value, mtime = last_values.get(var_name, (None, None))
-                            if value != last_value or now - mtime >= self._events_ttl:
-                                self._evt_mgr.emitEvent(var_type, var_name, make_data(value, units=unit))
-                                last_values[var_name] = (value, now)
+                                # get the unit if any
+                                try:
+                                    unit = child.attrib['unit'].split('/')[-1]
+                                except KeyError:
+                                    unit = None
 
-                            # clear any existing error condition for this sensor
-                            try:
-                                del reported_errors[obix_sensor]
-                            except KeyError:
-                                pass
+                                # get the CSTBox var type and name, based on the OBIX-to-CSTBox mapping
+                                # specified in the configuration file
+                                var_name, var_type = self._mapping[obix_sensor]
 
-                        else:
-                            # we got and error report :(
-                            # Report it, but in a smart way in case this error is repeated.
-                            # We use a memory of past errors and a two levels error report time to live (TTL)
-                            # to determine what must be done.
-                            last_report, first_report = reported_errors.get(obix_sensor, (0, now))
+                                # has the value changed from last time ? If yes, publish the corresponding event
+                                # and remember the new one
+                                last_value, mtime = last_values.get(var_name, (None, None))
+                                if value != last_value or now - mtime >= self._events_ttl:
+                                    self._evt_mgr.emitEvent(
+                                        var_type, var_name, json.dumps(make_data(value, units=unit))
+                                    )
+                                    last_values[var_name] = (value, now)
 
-                            if now - first_report <= self.SOLID_FAILURE_THRESHOLD:
-                                if now - last_report >= self.ERROR_REPORT_TTL:
-                                    try:
-                                        msg = child.attrib['display']
-                                    except KeyError:
-                                        msg = child.attrib['is'].split(':')[-1]
-                                    self.log_error('%s read request error : %s', obix_sensor, msg)
-                                    reported_errors[obix_sensor] = (now, first_report)
+                                # clear any existing error condition for this sensor
+                                try:
+                                    del reported_errors[obix_sensor]
+                                except KeyError:
+                                    pass
 
-                            else:   # solid error => notify it less frequently
-                                if now - last_report >= self.SOLID_FAILURE_THRESHOLD:
-                                    self.log_error('solid error for sensor %s', obix_sensor)
-                                    reported_errors[obix_sensor] = (now, first_report)
+                            else:
+                                # we got and error report :(
+                                # Report it, but in a smart way in case this error is repeated.
+                                # We use a memory of past errors and a two levels error report time to live (TTL)
+                                # to determine what must be done.
+                                last_report, first_report = reported_errors.get(obix_sensor, (0, now))
 
-                else:   # gateway request gave an error
-                    self.log_error('gateway request failure : (%d) %s', reply.status_code, reply.reason)
+                                if now - first_report <= self.SOLID_FAILURE_THRESHOLD:
+                                    if now - last_report >= self.ERROR_REPORT_TTL:
+                                        try:
+                                            msg = child.attrib['display']
+                                        except KeyError:
+                                            msg = child.attrib['is'].split(':')[-1]
+                                        self.log_error('%s read request error : %s', obix_sensor, msg)
+                                        reported_errors[obix_sensor] = (now, first_report)
 
-                next_schedule += self._polling_period
+                                else:   # solid error => notify it less frequently
+                                    if now - last_report >= self.SOLID_FAILURE_THRESHOLD:
+                                        self.log_error('solid error for sensor %s', obix_sensor)
+                                        reported_errors[obix_sensor] = (now, first_report)
+
+                    else:   # gateway request gave an error
+                        self.log_error('gateway request failure : (%d) %s', reply.status_code, reply.reason)
+
+                next_schedule = now + self._polling_period
 
             if loop_callback and not loop_callback(self):
                 break
@@ -247,7 +277,7 @@ class OBIXConnector(log.Loggable):
         if self._worker_thread:
             self.log_info('terminating polling thread...')
             self._terminate = True
-            self._worker_thread.wait(30)
+            self._worker_thread.join(30)
             self._worker_thread = None
             self.log_info('complete.')
 
