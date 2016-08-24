@@ -5,3 +5,5 @@ DEBIAN/control
 RELEASE-VERSION
 fabfile-settings.py
 /fabfile.py
+build/
+dist/
