@@ -29,14 +29,14 @@ from pycstbox import log
 from pycstbox import dbuslib 
 from pycstbox import evtmgr
 
-from pycstbox.obix import OBIX_Connector, OBIXPollerError
+from pycstbox.obix import OBIXConnector, OBIXConnectorError
 
 __author__ = 'Eric PASCUAL - CSTB (eric.pascual@cstb.fr)'
 
 
 if __name__ == '__main__':
     parser = cli.get_argument_parser(description="oBIX connector daemon")
-    cli.add_config_file_option_to_parser(parser, dflt_name=OBIX_Connector.DEFAULT_CONFIG_NAME)
+    cli.add_config_file_option_to_parser(parser, dflt_name=OBIXConnector.DEFAULT_CONFIG_NAME)
 
     args = parser.parse_args()
     log_level = getattr(log, args.loglevel)
@@ -45,11 +45,11 @@ if __name__ == '__main__':
     em = evtmgr.get_object(evtmgr.SENSOR_EVENT_CHANNEL)
 
     try:
-        polling_daemon = OBIX_Connector(args.config_path, em, log_level)
+        polling_daemon = OBIXConnector(args.config_path, em, log_level)
         try:
             polling_daemon.start()
         except Exception as e:
             sys.exit(e)
 
-    except OBIXPollerError as e:
+    except OBIXConnectorError as e:
         sys.exit(e)
