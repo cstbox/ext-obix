@@ -49,7 +49,7 @@ if __name__ == '__main__':
         try:
             polling_daemon.start()
         except Exception as e:
-            sys.exit(e)
+            sys.exit(1)
 
     except OBIXConnectorError as e:
-        sys.exit(e)
+        sys.exit(1)
