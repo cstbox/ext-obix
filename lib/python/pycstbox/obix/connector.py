@@ -72,6 +72,8 @@ class OBIXConnector(log.Loggable):
         log.Loggable.__init__(self)
         self.log_setLevel(log_level)
 
+        log.getLogger('requests').setLevel(log.INFO if self.logger.isEnabledFor(log.DEBUG) else log.WARN)
+
         if not evt_mgr:
             raise ValueError('evt_mgr parameter is mandatory')
         self._evt_mgr = evt_mgr
