@@ -16,7 +16,8 @@ from pycstbox.sysutils import parse_period
 __author__ = 'Eric Pascual - CSTB (eric.pascual@cstb.fr)'
 
 
-GatewayConfiguration = namedtuple('GatewayConfiguration', 'host node_id device_id')
+GATEWAY_CONFIG_ATTRIBUTES = 'host node_id device_id'
+GatewayConfiguration = namedtuple('GatewayConfiguration', GATEWAY_CONFIG_ATTRIBUTES)
 
 
 class OBIXConnector(log.Loggable):
@@ -44,6 +45,7 @@ class OBIXConnector(log.Loggable):
             },
             "global": {
                 "events_ttl": ...           # max age of events (ex: 2h, 60m,...). default: 2h
+                "polling_period": ...       # polling period (same syntax as events_ttl). default: 5mn
             }
         }
     """
@@ -58,6 +60,7 @@ class OBIXConnector(log.Loggable):
 
     DEFAULT_POLLING_PERIOD = 5 * 60         # 5 minutes
     ERROR_REPORT_TTL = 2 * 3600             # 2 hours
+    MAX_REPORT_COUNT = 3
     SOLID_FAILURE_THRESHOLD = 24 * 3600     # 24 hours
 
     DEFAULT_EVENTS_TTL = 2 * 3600           # 2 hours
@@ -69,13 +72,20 @@ class OBIXConnector(log.Loggable):
         :param log_level: logging level
         :param alt_query_gateway: an alternate version of :py:meth:`_query_gateway` for unit tests
         """
+        self._worker_thread = None
+        self._terminate = False
+
         log.Loggable.__init__(self)
         self.log_setLevel(log_level)
 
         log.getLogger('requests').setLevel(log.INFO if self.logger.isEnabledFor(log.DEBUG) else log.WARN)
 
+        def die(msg):
+            self.log_critical(msg)
+            raise OBIXConnectorError(msg)
+
         if not evt_mgr:
-            raise ValueError('evt_mgr parameter is mandatory')
+            die('evt_mgr parameter is mandatory')
         self._evt_mgr = evt_mgr
 
         with open(config_path) as fp:
@@ -88,6 +98,10 @@ class OBIXConnector(log.Loggable):
             self.log_info("- %-20s : %s", k, v)
         self._gateway_cfg = GatewayConfiguration(**gw_cfg)
 
+        for attr in GATEWAY_CONFIG_ATTRIBUTES.split():
+            if not getattr(self._gateway_cfg, attr):
+                die('gateway "%s" parameter is mandatory' % attr)
+
         # loads the {obix_id: (var_name, var_type)} mapping
         self._mapping = cfg_dict['mapping']
         self.log_info("mapping configuration :")
@@ -96,9 +110,6 @@ class OBIXConnector(log.Loggable):
 
         # creates the reverse lookup {var_name: obix_id}
         self._reverse_mapping = {var_def[0]: obix_id for obix_id, var_def in self._mapping.iteritems()}
-
-        self._worker_thread = None
-        self._terminate = False
 
         self.log_info("global configuration :")
         try:
@@ -180,7 +191,7 @@ class OBIXConnector(log.Loggable):
         ns_sub_pattern = re.compile(r'{.*}')
 
         request_exception_level = 0
-        logger.info('starting polling loop')
+        logger.info('starting polling loop (period=%ss)' % self._polling_period)
         while not self._terminate:
             now = time.time()
 
@@ -207,8 +218,8 @@ class OBIXConnector(log.Loggable):
                     if reply.status_code == 200:
                         root = ET.fromstring(reply.text)
                         for child, obix_sensor in zip(root, sensor_list):
-                            tag = child.tag
-                            if tag != 'err':
+                            tag = child.tag.split('}')[-1]
+                            if tag in pythonize:
                                 # strip namespaces for simplification's sake (we don't support them for the moment)
                                 tag = ns_sub_pattern.sub('', tag)
 
@@ -242,20 +253,39 @@ class OBIXConnector(log.Loggable):
                                     pass
 
                             else:
-                                # we got and error report :(
+                                # we got an error report or something we don't know about :(
                                 # Report it, but in a smart way in case this error is repeated.
                                 # We use a memory of past errors and a two levels error report time to live (TTL)
                                 # to determine what must be done.
-                                last_report, first_report = reported_errors.get(obix_sensor, (0, now))
+                                last_report, first_report, report_count = reported_errors.get(obix_sensor, (0, now, 0))
 
                                 if now - first_report <= self.SOLID_FAILURE_THRESHOLD:
-                                    if now - last_report >= self.ERROR_REPORT_TTL:
+                                    report_expired = now - last_report >= self.ERROR_REPORT_TTL
+                                    too_many_reports = report_count >= self.MAX_REPORT_COUNT
+
+                                    if report_expired or not too_many_reports:
+                                        if report_expired:
+                                            report_count = 1
+                                        else:
+                                            report_count += 1
+
                                         try:
-                                            msg = child.attrib['display']
+                                            if tag == 'err':
+                                                msg = child.attrib['display']
+                                            else:
+                                                msg = 'unexpected tag (%s)' % tag
                                         except KeyError:
                                             msg = child.attrib['is'].split(':')[-1]
-                                        self.log_error('%s read request error : %s', obix_sensor, msg)
-                                        reported_errors[obix_sensor] = (now, first_report)
+                                        self.log_error(
+                                            '"%s" read request error (cnt=%d) : %s',
+                                            obix_sensor, report_count, msg
+                                        )
+                                        reported_errors[obix_sensor] = (now, first_report, report_count)
+                                        if report_count >= self.MAX_REPORT_COUNT:
+                                            self.log_error(
+                                                'max error count reached for "%s" (will not be reported any more)',
+                                                obix_sensor
+                                            )
 
                                 else:   # solid error => notify it less frequently
                                     if now - last_report >= self.SOLID_FAILURE_THRESHOLD:
