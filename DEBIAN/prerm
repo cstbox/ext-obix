@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#set -e
-
 . /etc/cstbox/setenv
 . $CSTBOX_LIB_DPKG/lib-maintscript
 
