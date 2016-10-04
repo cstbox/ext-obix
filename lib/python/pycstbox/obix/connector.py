@@ -49,7 +49,7 @@ class OBIXConnector(log.Loggable):
             }
         }
     """
-    DEFAULT_CONFIG_NAME = 'cstbox-obix.cfg'
+    DEFAULT_CONFIG_NAME = 'obix.cfg'
 
     OBIX_URL_TEMPLATE = "http://%(host)s/obix/batch"
     OBIX_REQUEST_PROLOG = '<?xml version="1.0" encoding="UTF-8"?><list is="obix:BatchIn">'
