@@ -149,6 +149,13 @@ class OBIXConnector(log.Loggable):
         self._terminate = False
         self._worker_thread.start()
 
+    def is_alive(self):
+        return self._worker_thread.is_alive() if self._worker_thread else False
+
+    def join(self, timeout):
+        if self._worker_thread:
+            self._worker_thread.join(timeout)
+
     def step_run(self, loop_callback):
         """ Step by step pass in loop for unit tests.
 

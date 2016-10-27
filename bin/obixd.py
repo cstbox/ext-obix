@@ -23,6 +23,7 @@ mapped to configured variables of interest.
 """
 
 import sys
+import signal
 
 from pycstbox import cli
 from pycstbox import log 
@@ -46,10 +47,19 @@ if __name__ == '__main__':
 
     try:
         polling_daemon = OBIXConnector(args.config_path, em, log_level)
+
+        def sigterm_handler(*args, **kwargs):
+            polling_daemon.terminate()
+
+        signal.signal(signal.SIGTERM, sigterm_handler)
+        signal.signal(signal.SIGINT, sigterm_handler)
         try:
             polling_daemon.start()
         except Exception as e:
             sys.exit(1)
+        else:
+            while polling_daemon.is_alive():
+                polling_daemon.join(0.1)
 
     except OBIXConnectorError as e:
         sys.exit(1)
