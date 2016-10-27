@@ -178,7 +178,7 @@ class OBIXConnector(log.Loggable):
 
         # OBIX to Python types mapping
         pythonize = {
-            'bool': bool,
+            'bool': lambda x: x.lower() == 'true',
             'int': int,
             'real': float
         }
