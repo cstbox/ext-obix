@@ -43,6 +43,11 @@ class OBIXConnector(log.Loggable):
                 <obix_var_name>: [<CSTBox_var_name>, <CSTBox_var_type>],
                 ...
             },
+            "filters": {                    # incoming values filters
+                                            # (out of bounds values will be discarded, either bound being allowed 
+                                            # to be defined as null if no check is to be applied for it)
+                <obix_var_name>: [<bound_min>, <bound_max>],
+            },
             "global": {
                 "events_ttl": ...           # max age of events (ex: 2h, 60m,...). default: 2h
                 "polling_period": ...       # polling period (same syntax as events_ttl). default: 5mn
@@ -64,6 +69,9 @@ class OBIXConnector(log.Loggable):
     SOLID_FAILURE_THRESHOLD = 24 * 3600     # 24 hours
 
     DEFAULT_EVENTS_TTL = 2 * 3600           # 2 hours
+
+    MAX_REQUEST_RETRIES = 3
+    REQUEST_RETRY_DELAY = 5                 # seconds
 
     def __init__(self, config_path, evt_mgr, log_level=log.INFO, alt_query_gateway=None):
         """
@@ -106,6 +114,12 @@ class OBIXConnector(log.Loggable):
         self._mapping = cfg_dict['mapping']
         self.log_info("mapping configuration :")
         for k, v in self._mapping.iteritems():
+            self.log_info("- %-20s -> %s", k, v)
+
+        # loads the configured filters
+        self._filters = cfg_dict['filters']
+        self.log_info("filters configuration :")
+        for k, v in self._filters.iteritems():
             self.log_info("- %-20s -> %s", k, v)
 
         # creates the reverse lookup {var_name: obix_id}
@@ -203,23 +217,41 @@ class OBIXConnector(log.Loggable):
             now = time.time()
 
             if now >= next_schedule:
+                # Be fault tolerant by retrying the request in case of failure.
+                # This is especially useful when starting the box, since the network configuration
+                # can be still on progress (f.i. DHCP takes some time to complete)
+                remaining_retries = self.MAX_REQUEST_RETRIES
+                request_ok = False
+                while (not request_ok) and (remaining_retries > 0):
+                    try:
+                        reply = self._query_gateway(url, data=obix_request)
 
-                try:
-                    reply = self._query_gateway(url, data=obix_request)
+                    except requests.RequestException as e:
+                        if remaining_retries == self.MAX_REQUEST_RETRIES:
+                            # this is the first time => tell something went wrong
+                            logger.error('server communication error : %s', e)
+                        remaining_retries -= 1
+                        if remaining_retries:
+                            logger.info('... retrying in %d seconds...', self.REQUEST_RETRY_DELAY)
+                            time.sleep(self.REQUEST_RETRY_DELAY)
 
-                except requests.RequestException as e:
+                    else:
+                        request_ok = True
+
+                if not request_ok:
+                    # start the repetition accounting process to avoid filling the log with permanent errors
                     if request_exception_level == 0:
-                        logger.error('gateway request error : %s', e)
+                        logger.error('retry count exhausted, abandoning polling for this loop')
                         request_exception_level = 1
                     elif request_exception_level == 1:
-                        logger.error('gateway request error (solid) : %s', e)
+                        logger.error('repeated server communication error (will not be reported anymore)')
                         request_exception_level = 2
                     else:
                         pass    # don't report anymore
 
                 else:
                     if request_exception_level:
-                        logger.info('recovered from gateway request error')
+                        logger.info('recovered from last server communication error')
                         request_exception_level = 0
 
                     if reply.status_code == 200:
@@ -244,14 +276,27 @@ class OBIXConnector(log.Loggable):
                                 # specified in the configuration file
                                 var_name, var_type = self._mapping[obix_sensor]
 
-                                # has the value changed from last time ? If yes, publish the corresponding event
-                                # and remember the new one
-                                last_value, mtime = last_values.get(var_name, (None, None))
-                                if value != last_value or now - mtime >= self._events_ttl:
-                                    self._evt_mgr.emitEvent(
-                                        var_type, var_name, json.dumps(make_data(value, units=unit))
-                                    )
-                                    last_values[var_name] = (value, now)
+                                # applied configured filter for this value, if any
+                                discard_value = False
+                                if obix_sensor in self._filters:
+                                    bound_min, bound_max = self._filters[obix_sensor]
+                                    if (bound_min is not None and value < bound_min) or \
+                                        (bound_max is not None and value > bound_max):
+                                        self.log_warning(
+                                            'out of bounds value (%s) for sensor %s => discarded',
+                                            value, obix_sensor
+                                        )
+                                        discard_value = True
+
+                                if not discard_value:
+                                    # has the value changed from last time ? If yes, publish the corresponding event
+                                    # and remember the new one
+                                    last_value, mtime = last_values.get(var_name, (None, None))
+                                    if value != last_value or now - mtime >= self._events_ttl:
+                                        self._evt_mgr.emitEvent(
+                                            var_type, var_name, json.dumps(make_data(value, units=unit))
+                                        )
+                                        last_values[var_name] = (value, now)
 
                                 # clear any existing error condition for this sensor
                                 try:
@@ -290,7 +335,7 @@ class OBIXConnector(log.Loggable):
                                         reported_errors[obix_sensor] = (now, first_report, report_count)
                                         if report_count >= self.MAX_REPORT_COUNT:
                                             self.log_error(
-                                                'max error count reached for "%s" (will not be reported any more)',
+                                                'max error count reached for "%s" (will not be reported anymore)',
                                                 obix_sensor
                                             )
 
